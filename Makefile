@@ -17,4 +17,4 @@ run:
 	mpirun -np 4 ./mpi $(RUN_ARGS)
 
 clean:
-	rm mpi
+	rm -f mpi
