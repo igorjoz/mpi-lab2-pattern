@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#define SUMMARY_FIELDS 6
+#define SUMMARY_FIELDS 5
 
 typedef struct BlockSummary {
   unsigned long long pair_count;
@@ -12,7 +12,6 @@ typedef struct BlockSummary {
   unsigned long long last_odd;
   int first_is_prime;
   int last_is_prime;
-  int has_work;
 } BlockSummary;
 
 static unsigned long long last_odd_in_range(unsigned long long range_end) {
@@ -24,20 +23,22 @@ static unsigned long long last_odd_in_range(unsigned long long range_end) {
 }
 
 static int is_prime(unsigned long long value) {
-  unsigned long long divisor = 0;
+  unsigned long long divisor = 0ULL;
 
   if (value < 2ULL) {
     return 0;
   }
-  if ((value & 1ULL) == 0ULL) {
-    return value == 2ULL;
-  }
-  if (value % 3ULL == 0ULL) {
-    return value == 3ULL;
+
+  if (value == 2ULL) {
+    return 1;
   }
 
-  for (divisor = 5ULL; divisor <= value / divisor; divisor += 6ULL) {
-    if (value % divisor == 0ULL || value % (divisor + 2ULL) == 0ULL) {
+  if (value % 2ULL == 0ULL) {
+    return 0;
+  }
+
+  for (divisor = 3ULL; divisor <= value / divisor; divisor += 2ULL) {
+    if (value % divisor == 0ULL) {
       return 0;
     }
   }
@@ -47,7 +48,7 @@ static int is_prime(unsigned long long value) {
 
 static BlockSummary process_block(unsigned long long first_odd,
                                   unsigned long long odd_count) {
-  BlockSummary summary = {0, 0, 0, 0, 0, 0};
+  BlockSummary summary = {0, 0, 0, 0, 0};
   unsigned long long current = 0;
   unsigned long long index = 0;
   int previous_is_prime = 0;
@@ -58,7 +59,6 @@ static BlockSummary process_block(unsigned long long first_odd,
 
   summary.first_odd = first_odd;
   summary.last_odd = first_odd + 2ULL * (odd_count - 1ULL);
-  summary.has_work = 1;
 
   current = first_odd;
   for (index = 0ULL; index < odd_count; ++index, current += 2ULL) {
@@ -91,9 +91,8 @@ int main(int argc, char **argv) {
   unsigned long long local_offset = 0ULL;
   unsigned long long local_start = 0ULL;
   unsigned long long total_pairs = 0ULL;
-  unsigned long long local_summary[SUMMARY_FIELDS] = {0ULL, 0ULL, 0ULL,
-                                                      0ULL, 0ULL, 0ULL};
-  unsigned long long *all_summaries = NULL;
+  unsigned long long local_summary[SUMMARY_FIELDS] = {0ULL, 0ULL, 0ULL, 0ULL,
+                                                      0ULL};
   int myrank = 0;
   int nproc = 0;
 
@@ -117,15 +116,6 @@ int main(int argc, char **argv) {
                  (((unsigned long long)myrank < extra_odds) ? (unsigned long long)myrank
                                                             : extra_odds);
 
-  if (myrank == 0) {
-    all_summaries = (unsigned long long *)calloc((size_t)nproc * SUMMARY_FIELDS,
-                                                 sizeof(unsigned long long));
-    if (all_summaries == NULL) {
-      fprintf(stderr, "[Error] Cannot allocate memory for summaries.\n");
-      MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-    }
-  }
-
   MPI_Barrier(MPI_COMM_WORLD);
   if (myrank == 0) {
     gettimeofday(&ins__tstart, NULL);
@@ -142,39 +132,36 @@ int main(int argc, char **argv) {
     local_summary[2] = summary.last_odd;
     local_summary[3] = (unsigned long long)summary.first_is_prime;
     local_summary[4] = (unsigned long long)summary.last_is_prime;
-    local_summary[5] = (unsigned long long)summary.has_work;
   }
-
-  MPI_Gather(local_summary, SUMMARY_FIELDS, MPI_UNSIGNED_LONG_LONG, all_summaries,
-             SUMMARY_FIELDS, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
 
   if (myrank == 0) {
     unsigned long long previous_last_odd = 0ULL;
     int previous_last_is_prime = 0;
-    int previous_has_work = 0;
     int rank = 0;
 
-    for (rank = 0; rank < nproc; ++rank) {
-      unsigned long long *summary = &all_summaries[rank * SUMMARY_FIELDS];
-      unsigned long long pair_count = summary[0];
-      unsigned long long current_first_odd = summary[1];
-      unsigned long long current_last_odd = summary[2];
-      int current_first_is_prime = (int)summary[3];
-      int current_last_is_prime = (int)summary[4];
-      int current_has_work = (int)summary[5];
+    total_pairs += local_summary[0];
+    if (local_summary[1] != 0ULL) {
+      previous_last_odd = local_summary[2];
+      previous_last_is_prime = (int)local_summary[4];
+    }
 
-      total_pairs += pair_count;
+    for (rank = 1; rank < nproc; ++rank) {
+      unsigned long long remote_summary[SUMMARY_FIELDS];
 
-      if (previous_has_work && current_has_work &&
-          previous_last_odd + 2ULL == current_first_odd &&
-          previous_last_is_prime && current_first_is_prime) {
+      MPI_Recv(remote_summary, SUMMARY_FIELDS, MPI_UNSIGNED_LONG_LONG, rank, 0,
+               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+      total_pairs += remote_summary[0];
+
+      if (previous_last_odd != 0ULL && remote_summary[1] != 0ULL &&
+          previous_last_odd + 2ULL == remote_summary[1] &&
+          previous_last_is_prime && remote_summary[3] != 0ULL) {
         total_pairs++;
       }
 
-      if (current_has_work) {
-        previous_last_odd = current_last_odd;
-        previous_last_is_prime = current_last_is_prime;
-        previous_has_work = 1;
+      if (remote_summary[1] != 0ULL) {
+        previous_last_odd = remote_summary[2];
+        previous_last_is_prime = (int)remote_summary[4];
       }
     }
 
@@ -182,7 +169,9 @@ int main(int argc, char **argv) {
     printf("Twin primes in [%llu, %llu]: %llu\n", range_start, range_end,
            total_pairs);
     ins__printtime(&ins__tstart, &ins__tstop, ins__args.marker);
-    free(all_summaries);
+  } else {
+    MPI_Send(local_summary, SUMMARY_FIELDS, MPI_UNSIGNED_LONG_LONG, 0, 0,
+             MPI_COMM_WORLD);
   }
 
   MPI_Finalize();
